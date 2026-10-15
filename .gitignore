@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# 运行时动态生成的私人会话数据与看板网页 (严禁提交到公开仓库，防止个人真实会话与路径泄漏)
+data.json
+index.html
+*.bat.bak
+screenshot.png
