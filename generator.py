@@ -32,6 +32,41 @@ if sys.platform == "win32":
         pass
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+SNAPSHOTS_DIR = os.path.join(CURRENT_DIR, "snapshots")
+
+def get_snapshot_slug(timestamp_str):
+    return timestamp_str.replace(":", "-").replace(" ", "_")
+
+def save_snapshot(summary, conversations):
+    os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
+    gen_at = summary.get("generated_at", "")
+    if not gen_at:
+        gen_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        summary["generated_at"] = gen_at
+    slug = get_snapshot_slug(gen_at)
+    file_name = f"snapshot_{slug}.json"
+    file_path = os.path.join(SNAPSHOTS_DIR, file_name)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump({"summary": summary, "conversations": conversations}, f, ensure_ascii=False, indent=2)
+    return file_name
+
+def list_snapshots():
+    os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
+    files = [f for f in os.listdir(SNAPSHOTS_DIR) if f.startswith("snapshot_") and f.endswith(".json")]
+    files.sort(reverse=True)
+    result = []
+    for f in files:
+        raw_slug = f[len("snapshot_"):-len(".json")]
+        parts = raw_slug.split("_")
+        if len(parts) == 2:
+            time_str = parts[0] + " " + parts[1].replace("-", ":")
+        else:
+            time_str = raw_slug
+        result.append({
+            "id": f,
+            "time": time_str
+        })
+    return result
 
 def estimate_tokens_from_text(text):
     if not text:
@@ -421,7 +456,8 @@ def load_data(antigravity_dir):
             "steps": trend_steps
         },
         "projects": projects_list,
-        "top_15": conversations[:15]
+        "top_15": conversations[:15],
+        "snapshots": list_snapshots()
     }
 
     return summary, conversations
@@ -589,9 +625,17 @@ def generate_html(summary, conversations):
       font-weight: 900 !important;
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     }
+    ::selection {
+      background-color: #2563eb !important;
+      color: #ffffff !important;
+    }
+    ::-moz-selection {
+      background-color: #2563eb !important;
+      color: #ffffff !important;
+    }
   </style>
 </head>
-<body class="min-h-screen font-sans antialiased selection:bg-cyan-500/30 selection:text-cyan-400">
+<body class="min-h-screen font-sans antialiased selection:bg-blue-600 selection:text-white dark:selection:bg-blue-500 dark:selection:text-white">
 
   <!-- 顶部状态栏与主题切换 (StudyHelp 风格高透毛玻璃) -->
   <header class="border-b theme-border backdrop-blur-xl sticky top-0 z-30 bg-white/70 dark:bg-slate-950/70 shadow-sm">
@@ -608,7 +652,7 @@ def generate_html(summary, conversations):
               Antigravity Token 消耗全景仪表盘
             </h1>
             <span class="px-2.5 py-0.5 text-[10px] font-black rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-sm shadow-indigo-500/20">
-              V6.0 极光灵动版
+              V7.0 极光灵动版
             </span>
           </div>
           <p class="text-xs text-slate-500 dark:text-slate-400 hidden sm:block">
@@ -617,8 +661,27 @@ def generate_html(summary, conversations):
         </div>
       </div>
 
-      <!-- 右侧控制区 (多彩胶囊按钮群) -->
+      <!-- 右侧控制区 (快照回溯与多彩胶囊按钮群) -->
       <div class="flex items-center gap-2 sm:gap-3">
+        <!-- 快照时间点标记与历史回溯下拉选择器 -->
+        <div class="relative flex items-center" id="snapshotControlGroup">
+          <div class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/90 dark:bg-slate-800/90 border theme-border text-xs shadow-xs text-slate-700 dark:text-slate-200 hover:border-cyan-400/60 transition-all">
+            <span class="relative flex h-2 w-2">
+              <span id="snapshotPing" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span id="snapshotDot" class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            <span class="text-slate-400 text-[11px] font-medium hidden md:inline shrink-0">数据时间:</span>
+            <div class="relative flex items-center">
+              <select id="snapshotSelect" onchange="switchSnapshot(this.value)" class="bg-transparent font-mono font-bold text-xs text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer appearance-none pr-5 pl-0.5" title="点击切换并回溯历史扫描快照">
+                <option value="current">${summary.get('generated_at', '')} (当前最新)</option>
+              </select>
+              <div class="pointer-events-none absolute right-0 flex items-center text-slate-400">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <button id="btnRefreshData" onclick="refreshDashboardData()" class="p-2 sm:px-3 sm:py-1.5 rounded-xl bg-cyan-50 dark:bg-cyan-950/40 hover:bg-cyan-100 text-cyan-700 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-800 text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all" title="点击由服务端重新深度扫描全量会话并无刷新同步">
           <svg id="refreshSpinner" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
           <span class="hidden sm:inline" id="refreshText">重新扫描</span>
@@ -1147,18 +1210,30 @@ def generate_html(summary, conversations):
             <span class="text-[10px] font-normal text-slate-400 font-mono" id="drawerActiveDaysTag">跨度: -</span>
           </div>
 
-          <div class="grid grid-cols-3 gap-1.5 text-xs">
-            <div class="p-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800/80 text-center">
-              <div class="text-[9px] text-slate-400 truncate">Prompt 输入 (Input)</div>
-              <div class="font-bold font-mono text-blue-600 dark:text-blue-400 text-xs mt-0.5 truncate" id="drawerInput">-</div>
+          <div class="grid grid-cols-3 gap-2 text-xs">
+            <div class="p-2 sm:p-2.5 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/70 dark:border-blue-800/50 shadow-xs text-center flex flex-col items-center justify-center transition-all hover:scale-[1.01]">
+              <div class="text-xs font-bold text-blue-700 dark:text-blue-300 tracking-wide flex items-center justify-center gap-1 mb-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0"></span>
+                <span>Prompt 输入 (Input)</span>
+              </div>
+              <div class="font-black font-sans text-blue-600 dark:text-blue-400 text-base sm:text-lg lg:text-xl tracking-tight leading-none" id="drawerInput">-</div>
+              <div class="text-[10px] sm:text-[11px] font-mono font-medium text-slate-400 dark:text-slate-400 mt-1" id="drawerInputExact">-</div>
             </div>
-            <div class="p-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800/80 text-center">
-              <div class="text-[9px] text-slate-400 truncate">缓存读取 (Cache)</div>
-              <div class="font-bold font-mono text-amber-500 text-xs mt-0.5 truncate" id="drawerCache">-</div>
+            <div class="p-2 sm:p-2.5 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-800/50 shadow-xs text-center flex flex-col items-center justify-center transition-all hover:scale-[1.01]">
+              <div class="text-xs font-bold text-amber-700 dark:text-amber-300 tracking-wide flex items-center justify-center gap-1 mb-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0"></span>
+                <span>缓存读取 (Cache)</span>
+              </div>
+              <div class="font-black font-sans text-amber-500 dark:text-amber-400 text-base sm:text-lg lg:text-xl tracking-tight leading-none" id="drawerCache">-</div>
+              <div class="text-[10px] sm:text-[11px] font-mono font-medium text-slate-400 dark:text-slate-400 mt-1" id="drawerCacheExact">-</div>
             </div>
-            <div class="p-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800/80 text-center">
-              <div class="text-[9px] text-slate-400 truncate">思考生成 (Output)</div>
-              <div class="font-bold font-mono text-emerald-500 text-xs mt-0.5 truncate" id="drawerOutput">-</div>
+            <div class="p-2 sm:p-2.5 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-800/50 shadow-xs text-center flex flex-col items-center justify-center transition-all hover:scale-[1.01]">
+              <div class="text-xs font-bold text-emerald-700 dark:text-emerald-300 tracking-wide flex items-center justify-center gap-1 mb-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
+                <span>思考生成 (Output)</span>
+              </div>
+              <div class="font-black font-sans text-emerald-600 dark:text-emerald-400 text-base sm:text-lg lg:text-xl tracking-tight leading-none" id="drawerOutput">-</div>
+              <div class="text-[10px] sm:text-[11px] font-mono font-medium text-slate-400 dark:text-slate-400 mt-1" id="drawerOutputExact">-</div>
             </div>
           </div>
 
@@ -1485,6 +1560,115 @@ def generate_html(summary, conversations):
       }
     }
 
+    // ==========================================
+    // 历史快照多版本回溯管理
+    // ==========================================
+    let currentActiveSnapshotId = 'current';
+    let liveDashboardData = null;
+    let liveConversationsData = null;
+
+    function initSnapshots() {
+      if (!liveDashboardData && window.DASHBOARD_DATA) {
+        try {
+          liveDashboardData = JSON.parse(JSON.stringify(window.DASHBOARD_DATA));
+          liveConversationsData = JSON.parse(JSON.stringify(window.ALL_CONVERSATIONS || []));
+        } catch (e) {
+          liveDashboardData = window.DASHBOARD_DATA;
+          liveConversationsData = window.ALL_CONVERSATIONS;
+        }
+      }
+
+      if (location.protocol.startsWith('http')) {
+        fetch('/api/snapshots')
+          .then(r => r.json())
+          .then(data => {
+            if (data.snapshots && Array.isArray(data.snapshots)) {
+              renderSnapshotOptions(data.snapshots);
+            }
+          })
+          .catch(() => {});
+      } else if (window.DASHBOARD_DATA && window.DASHBOARD_DATA.snapshots) {
+        renderSnapshotOptions(window.DASHBOARD_DATA.snapshots);
+      }
+    }
+
+    function renderSnapshotOptions(snapshots) {
+      const select = document.getElementById('snapshotSelect');
+      if (!select) return;
+      const currentGenAt = (liveDashboardData && liveDashboardData.generated_at) ? liveDashboardData.generated_at : '';
+      select.innerHTML = '';
+
+      // 第一个选项：当前最新数据
+      const optCurrent = document.createElement('option');
+      optCurrent.value = 'current';
+      optCurrent.text = `${currentGenAt || '实时数据'} (当前最新)`;
+      select.appendChild(optCurrent);
+
+      // 历史快照选项
+      if (snapshots && snapshots.length > 0) {
+        snapshots.forEach(s => {
+          if (s.time === currentGenAt) return;
+          const opt = document.createElement('option');
+          opt.value = s.id;
+          opt.text = `${s.time}`;
+          select.appendChild(opt);
+        });
+      }
+
+      select.value = currentActiveSnapshotId;
+    }
+
+    function switchSnapshot(snapId) {
+      currentActiveSnapshotId = snapId;
+      const ping = document.getElementById('snapshotPing');
+      const dot = document.getElementById('snapshotDot');
+
+      if (snapId === 'current') {
+        if (liveDashboardData && liveConversationsData) {
+          window.DASHBOARD_DATA = JSON.parse(JSON.stringify(liveDashboardData));
+          window.ALL_CONVERSATIONS = JSON.parse(JSON.stringify(liveConversationsData));
+          currentData = window.ALL_CONVERSATIONS;
+          initKPIs();
+          initCharts();
+          applyFilterAndSort();
+          renderProjectsView();
+          if (ping) ping.classList.remove('hidden');
+          if (dot) dot.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';
+          showToast('已切回当前最新实时数据');
+        } else {
+          refreshDashboardData();
+        }
+        return;
+      }
+
+      // 从后端读取历史快照文件
+      showToast('正在加载历史快照数据...');
+      fetch(`/api/snapshot?id=${encodeURIComponent(snapId)}`)
+        .then(r => {
+          if (!r.ok) throw new Error('快照文件读取失败');
+          return r.json();
+        })
+        .then(snapData => {
+          if (snapData.summary && snapData.conversations) {
+            window.DASHBOARD_DATA = snapData.summary;
+            window.ALL_CONVERSATIONS = snapData.conversations;
+            currentData = window.ALL_CONVERSATIONS;
+            initKPIs();
+            initCharts();
+            applyFilterAndSort();
+            renderProjectsView();
+            if (ping) ping.classList.add('hidden');
+            if (dot) dot.className = 'relative inline-flex rounded-full h-2 w-2 bg-amber-500';
+            showToast(`已切入历史快照: ${snapData.summary.generated_at || snapId} (只读透视)`);
+          }
+        })
+        .catch(err => {
+          showToast('加载快照失败: ' + err.message);
+          const select = document.getElementById('snapshotSelect');
+          if (select) select.value = 'current';
+        });
+    }
+
     function refreshDashboardData() {
       const spinner = document.getElementById('refreshSpinner');
       const text = document.getElementById('refreshText');
@@ -1497,14 +1681,30 @@ def generate_html(summary, conversations):
           .then(data => {
             if (data.success && data.summary) {
               window.DASHBOARD_DATA = data.summary;
+              try { liveDashboardData = JSON.parse(JSON.stringify(data.summary)); } catch(e) { liveDashboardData = data.summary; }
+              currentActiveSnapshotId = 'current';
+
               fetch('/api/data').then(r => r.json()).then(full => {
                 window.ALL_CONVERSATIONS = full.conversations || [];
+                try { liveConversationsData = JSON.parse(JSON.stringify(window.ALL_CONVERSATIONS)); } catch(e) { liveConversationsData = window.ALL_CONVERSATIONS; }
                 currentData = window.ALL_CONVERSATIONS;
                 initKPIs();
                 initCharts();
                 applyFilterAndSort();
                 renderProjectsView();
-                showToast('看板数据已实时深度扫描更新！');
+
+                if (data.snapshots) {
+                  renderSnapshotOptions(data.snapshots);
+                } else {
+                  initSnapshots();
+                }
+
+                const ping = document.getElementById('snapshotPing');
+                const dot = document.getElementById('snapshotDot');
+                if (ping) ping.classList.remove('hidden');
+                if (dot) dot.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';
+
+                showToast('看板数据已深度扫描更新，新快照已自动归档！');
               });
             }
           })
@@ -1612,6 +1812,13 @@ def generate_html(summary, conversations):
       const isDark = document.documentElement.classList.contains('dark');
       const gridColor = isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.06)';
       const textColor = isDark ? '#94a3b8' : '#64748b';
+
+      if (chartInstances.trend) {
+        try { chartInstances.trend.destroy(); } catch (e) {}
+      }
+      if (chartInstances.ratio) {
+        try { chartInstances.ratio.destroy(); } catch (e) {}
+      }
 
       const ctxTrend = document.getElementById('trendChart').getContext('2d');
       chartInstances.trend = new Chart(ctxTrend, {
@@ -2435,10 +2642,18 @@ def generate_html(summary, conversations):
       document.getElementById('drawerRate').innerText = stats.cache_rate + ' %';
       document.getElementById('drawerCacheTokens').innerText = `已节省: ${formatShort(stats.cache)}`;
 
-      // Token 详细构成
-      document.getElementById('drawerInput').innerText = `${prefix}${formatShort(stats.input)} (${formatNumber(stats.input)})`;
-      document.getElementById('drawerCache').innerText = `${prefix}${formatShort(stats.cache)} (${formatNumber(stats.cache)})`;
-      document.getElementById('drawerOutput').innerText = `${prefix}${formatShort(stats.output)} (${formatNumber(stats.output)})`;
+      // Token 详细构成 (大字号突出呈现 + 精确数字副标)
+      document.getElementById('drawerInput').innerText = `${prefix}${formatShort(stats.input)}`;
+      const inExact = document.getElementById('drawerInputExact');
+      if (inExact) inExact.innerText = `(${formatNumber(stats.input)})`;
+
+      document.getElementById('drawerCache').innerText = `${prefix}${formatShort(stats.cache)}`;
+      const cExact = document.getElementById('drawerCacheExact');
+      if (cExact) cExact.innerText = `(${formatNumber(stats.cache)})`;
+
+      document.getElementById('drawerOutput').innerText = `${prefix}${formatShort(stats.output)}`;
+      const outExact = document.getElementById('drawerOutputExact');
+      if (outExact) outExact.innerText = `(${formatNumber(stats.output)})`;
 
       // 活跃日期分布标签
       const daysContainer = document.getElementById('drawerDaysBreakdownList');
@@ -2547,7 +2762,7 @@ def generate_html(summary, conversations):
               </span>
               <span class="text-slate-400 font-mono">🕒 ${t.time || t.day || ''}</span>
             </div>
-            <div class="text-slate-900 dark:text-slate-100 font-sans whitespace-pre-wrap break-words leading-relaxed selection:bg-cyan-500/30 text-xs md:text-sm font-medium">${t.prompt}</div>
+            <div class="text-slate-900 dark:text-slate-100 font-sans whitespace-pre-wrap break-words leading-relaxed text-xs md:text-sm font-medium">${t.prompt}</div>
           `;
           turnsListContainer.appendChild(div);
         });
@@ -2609,6 +2824,7 @@ def generate_html(summary, conversations):
       initKPIs();
       initCharts();
       initDrawerResize();
+      initSnapshots();
       applyFilterAndSort();
       const savedView = localStorage.getItem('antigravity_active_view') || 'project';
       switchView(savedView);
@@ -2654,12 +2870,15 @@ def main():
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump({"summary": summary, "conversations": conversations}, f, ensure_ascii=False, indent=2)
 
+    snap_file = save_snapshot(summary, conversations)
+
     html_content = generate_html(summary, conversations)
     html_path = os.path.join(CURRENT_DIR, "index.html")
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html_content)
 
-    print(f"✅ V6.0 项目聚合透视与具体会话下钻看板已生成: {html_path}")
+    print(f"✅ V7.0 项目聚合透视与具体会话下钻看板已生成: {html_path}")
+    print(f"📦 历史扫描快照已归档: {snap_file}")
     print("=" * 68)
 
 if __name__ == "__main__":

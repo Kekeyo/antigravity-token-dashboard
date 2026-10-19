@@ -10,7 +10,10 @@ import json
 import shutil
 import subprocess
 import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
+try:
+    from http.server import ThreadingHTTPServer as HTTPServer, BaseHTTPRequestHandler
+except ImportError:
+    from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 # 引入同目录下的生成器模块
@@ -83,6 +86,29 @@ class AntigravityDashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(data.encode("utf-8"))
             return
 
+        # 获取所有历史快照列表
+        elif path == "/api/snapshots":
+            snaps = generator.list_snapshots()
+            res = {"snapshots": snaps}
+            self.send_cors_and_nocache_headers("application/json; charset=utf-8")
+            self.wfile.write(json.dumps(res, ensure_ascii=False).encode("utf-8"))
+            return
+
+        # 获取单个具体历史快照内容
+        elif path == "/api/snapshot":
+            qs = parse_qs(parsed.query)
+            snap_id = qs.get("id", [""])[0]
+            safe_name = os.path.basename(snap_id)
+            snap_path = os.path.join(generator.SNAPSHOTS_DIR, safe_name)
+            if os.path.exists(snap_path) and safe_name.startswith("snapshot_") and safe_name.endswith(".json"):
+                with open(snap_path, "r", encoding="utf-8") as f:
+                    data = f.read()
+                self.send_cors_and_nocache_headers("application/json; charset=utf-8")
+                self.wfile.write(data.encode("utf-8"))
+            else:
+                self.send_error(404, "Snapshot Not Found")
+            return
+
         # 状态探测
         elif path == "/api/status":
             res = {"status": "ok", "service": "antigravity-dashboard", "port": self.server.server_port}
@@ -97,7 +123,7 @@ class AntigravityDashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        # 1. 动态重新扫描并刷新全量看板
+        # 1. 动态重新扫描并刷新全量看板，自动归档历史快照
         if path == "/api/refresh":
             try:
                 antigravity_dir = generator.detect_antigravity_dir(None)
@@ -108,6 +134,9 @@ class AntigravityDashboardHandler(BaseHTTPRequestHandler):
                 with open(json_path, "w", encoding="utf-8") as f:
                     json.dump({"summary": summary, "conversations": conversations}, f, ensure_ascii=False, indent=2)
 
+                # 自动归档并保存历史快照文件 (按时间和日期命名)
+                snap_id = generator.save_snapshot(summary, conversations)
+
                 html_content = generator.generate_html(summary, conversations)
                 html_path = os.path.join(CURRENT_DIR, "index.html")
                 with open(html_path, "w", encoding="utf-8") as f:
@@ -115,9 +144,11 @@ class AntigravityDashboardHandler(BaseHTTPRequestHandler):
 
                 res = {
                     "success": True,
-                    "message": "数据已重新扫描并更新完成",
+                    "message": "数据已重新扫描并更新完成，历史快照已成功归档",
                     "summary": summary,
-                    "conversations_count": len(conversations)
+                    "conversations_count": len(conversations),
+                    "snapshot_id": snap_id,
+                    "snapshots": generator.list_snapshots()
                 }
                 self.send_cors_and_nocache_headers("application/json; charset=utf-8")
                 self.wfile.write(json.dumps(res, ensure_ascii=False).encode("utf-8"))
