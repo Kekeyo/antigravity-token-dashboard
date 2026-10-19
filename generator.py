@@ -923,14 +923,10 @@ def generate_html(summary, conversations):
                    class="w-full pl-8 pr-3 py-1.5 text-xs sm:text-sm rounded-xl theme-subtle border text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500 transition-all">
           </div>
 
-          <!-- 3. 特定日期筛选提示徽章 -->
-          <div id="sessionSpecificDateBadge" class="hidden items-center gap-1.5 px-2.5 py-1 rounded-xl bg-blue-500/15 border border-blue-500/30 text-blue-600 dark:text-cyan-400 text-xs font-semibold whitespace-nowrap shrink-0">
-            <span id="sessionSpecificDateText">📅 限定日期</span>
-            <button onclick="clearSpecificDate()" class="hover:text-red-500 font-bold ml-0.5 text-xs">✕</button>
-          </div>
-          <div id="projSpecificDateBadge" class="hidden items-center gap-1.5 px-2.5 py-1 rounded-xl bg-blue-500/15 border border-blue-500/30 text-blue-600 dark:text-cyan-400 text-xs font-semibold whitespace-nowrap shrink-0">
-            <span id="projSpecificDateText">📅 限定日期</span>
-            <button onclick="clearSpecificDate()" class="hover:text-red-500 font-bold ml-0.5 text-xs">✕</button>
+          <!-- 3. 特定日期筛选提示徽章 (全局唯一单例，杜绝双徽章并排显示) -->
+          <div id="globalSpecificDateBadge" class="hidden items-center gap-1.5 px-2.5 py-1 rounded-xl bg-blue-500/15 border border-blue-500/30 text-blue-600 dark:text-cyan-400 text-xs font-semibold whitespace-nowrap shrink-0 select-none">
+            <span id="globalSpecificDateText">📅 限定日期</span>
+            <button onclick="clearSpecificDate()" class="hover:text-red-500 font-bold ml-0.5 text-xs cursor-pointer" title="清除此日期限定">✕</button>
           </div>
         </div>
 
@@ -1868,8 +1864,15 @@ def generate_html(summary, conversations):
             intersect: false
           },
           onClick: (e, elements) => {
-            if (elements && elements.length > 0) {
-              const index = elements[0].index;
+            if (e && e.native && e.native.preventDefault) {
+              e.native.preventDefault();
+            }
+            let active = elements;
+            if ((!active || active.length === 0) && chartInstances.trend) {
+              active = chartInstances.trend.getElementsAtEventForMode(e, 'index', { intersect: false }, true);
+            }
+            if (active && active.length > 0) {
+              const index = active[0].index;
               const targetDate = s.trend.labels[index];
               if (targetDate) toggleDateLock(targetDate, index);
             } else {
@@ -1936,7 +1939,13 @@ def generate_html(summary, conversations):
           const pill = document.createElement('div');
           pill.setAttribute('data-date', dayStr);
           pill.className = 'daily-preview-pill p-2 rounded-xl theme-subtle border hover:border-cyan-500/50 hover:bg-cyan-500/5 transition-all cursor-pointer group select-none';
-          pill.onclick = () => toggleDateLock(dayStr, idx);
+          pill.onclick = (e) => {
+            if (e) {
+              if (e.preventDefault) e.preventDefault();
+              if (e.stopPropagation) e.stopPropagation();
+            }
+            toggleDateLock(dayStr, idx);
+          };
           pill.title = `点击锁定/筛选 ${dayStr} 会话明细\n净计费: ${formatNumber(billed)}\n缓存读取: ${formatNumber(cache)}`;
           pill.innerHTML = `
             <div class="text-[11px] font-mono font-semibold text-slate-500 dark:text-slate-400 group-hover:text-cyan-500 transition-colors">${shortDate}</div>
@@ -1993,6 +2002,7 @@ def generate_html(summary, conversations):
     // ==========================================
 
     function lockTrendTooltip(targetDate, targetIndex) {
+      const savedScrollY = window.scrollY;
       const s = window.DASHBOARD_DATA;
       if (!s || !s.trend || !s.trend.labels) return;
 
@@ -2004,7 +2014,7 @@ def generate_html(summary, conversations):
 
       lockedTrendDate = targetDate;
 
-      // 1. 同步执行底层数据筛选与徽章更新（静默生效，绝不调用 scrollIntoView 跳页）
+      // 1. 同步执行底层数据筛选与徽章更新（静默生效，绝不调用 scrollIntoView 跳页，严格保全视口）
       filterBySpecificDate(targetDate, false);
 
       // 2. 渲染并定位锁定的 Tooltip 浮层卡片
@@ -2024,10 +2034,14 @@ def generate_html(summary, conversations):
       // 4. 更新下方速览胶囊高亮发光状态
       updateDailyPillsHighlight(targetDate);
 
+      // 【视口锁定铁律】：严格保持当前滚动坐标，绝不跳页
+      window.scrollTo({ top: savedScrollY, behavior: 'instant' });
+
       showToast(`已锁定 ${targetDate} 数据卡片 (鼠标可乱动)`);
     }
 
     function unlockTrendTooltip(needClearFilter = true) {
+      const savedScrollY = window.scrollY;
       if (!lockedTrendDate) return;
       lockedTrendDate = null;
 
@@ -2050,14 +2064,17 @@ def generate_html(summary, conversations):
       if (needClearFilter && currentSpecificDate) {
         clearSpecificDate(false);
       }
+      window.scrollTo({ top: savedScrollY, behavior: 'instant' });
     }
 
     function toggleDateLock(targetDate, targetIndex) {
+      const savedScrollY = window.scrollY;
       if (lockedTrendDate === targetDate) {
         unlockTrendTooltip(true);
       } else {
         lockTrendTooltip(targetDate, targetIndex);
       }
+      window.scrollTo({ top: savedScrollY, behavior: 'instant' });
     }
 
     function updateDailyPillsHighlight(activeDate) {
@@ -2188,6 +2205,8 @@ def generate_html(summary, conversations):
     }
 
     function filterBySpecificDate(dateStr, showToastMsg = true) {
+      const savedScrollY = window.scrollY; // 锁死当前页面垂直滚动位置
+
       currentSpecificDate = dateStr;
       currentTimeCategory = 'all';
 
@@ -2209,40 +2228,42 @@ def generate_html(summary, conversations):
       applyFilterAndSort();
       renderProjectsView();
 
+      // 【视口锁定铁律】：严格保持当前滚动坐标，绝不跳页，确保用户视角稳稳停留在图表区域
+      window.scrollTo({ top: savedScrollY, behavior: 'instant' });
+
       if (showToastMsg) {
         showToast(`已为您精准锁定 ${dateStr} 的记录`);
       }
-      // 【关键修复】：彻底移除 scrollIntoView，绝不跳页，确保用户视角稳稳停留在图表区域！
     }
 
     function clearSpecificDate(unlockChart = true) {
+      const savedScrollY = window.scrollY;
       currentSpecificDate = null;
       setTimeFilter('all');
       if (unlockChart && lockedTrendDate) {
         unlockTrendTooltip(false);
       }
+      window.scrollTo({ top: savedScrollY, behavior: 'instant' });
       showToast('已恢复查看全部时间记录');
     }
 
     function updateSpecificDateBadge() {
-      const sessBadge = document.getElementById('sessionSpecificDateBadge');
-      const sessText = document.getElementById('sessionSpecificDateText');
-      const projBadge = document.getElementById('projSpecificDateBadge');
-      const projText = document.getElementById('projSpecificDateText');
+      const badge = document.getElementById('globalSpecificDateBadge');
+      const text = document.getElementById('globalSpecificDateText');
 
+      if (!badge) return;
       if (currentSpecificDate) {
-        if (sessBadge) { sessBadge.classList.remove('hidden'); sessBadge.classList.add('flex'); }
-        if (sessText) sessText.innerText = `📅 已限定日期：${currentSpecificDate}`;
-
-        if (projBadge) { projBadge.classList.remove('hidden'); projBadge.classList.add('flex'); }
-        if (projText) projText.innerText = `📅 已限定日期：${currentSpecificDate}`;
+        badge.classList.remove('hidden');
+        badge.classList.add('flex');
+        if (text) text.innerText = `📅 已限定日期: ${currentSpecificDate}`;
       } else {
-        if (sessBadge) { sessBadge.classList.add('hidden'); sessBadge.classList.remove('flex'); }
-        if (projBadge) { projBadge.classList.add('hidden'); projBadge.classList.remove('flex'); }
+        badge.classList.add('hidden');
+        badge.classList.remove('flex');
       }
     }
 
     function setTimeFilter(category) {
+      const savedScrollY = window.scrollY;
       currentTimeCategory = category;
       currentSpecificDate = null; // 清除特定单日限定
       updateSpecificDateBadge();
@@ -2261,6 +2282,7 @@ def generate_html(summary, conversations):
 
       applyFilterAndSort();
       renderProjectsView();
+      window.scrollTo({ top: savedScrollY, behavior: 'instant' });
     }
 
     function applyFilterAndSort() {
