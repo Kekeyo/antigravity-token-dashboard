@@ -830,8 +830,10 @@ def generate_html(summary, conversations):
               </span>
             </div>
           </div>
-          <div class="h-60">
+          <div class="h-60 relative" id="trendChartContainer">
             <canvas id="trendChart"></canvas>
+            <!-- 锁定提示框浮层 (Pinned Tooltip Card，支持点击锁定，鼠标自由乱动不消失，绝不跳页) -->
+            <div id="trendChartPinnedTooltip" class="hidden absolute z-30 pointer-events-auto transition-all duration-150 select-text"></div>
           </div>
         </div>
 
@@ -1253,14 +1255,23 @@ def generate_html(summary, conversations):
               <span class="px-2 py-0.5 rounded-full text-[10px] bg-blue-500/15 text-blue-600 dark:text-cyan-400 font-bold" id="drawerTurnBadge">共 0 轮</span>
             </span>
           </div>
-          <!-- 逐轮记录过滤器切换按钮 -->
-          <div class="flex items-center gap-1 p-0.5 rounded-lg bg-slate-200/50 dark:bg-slate-800 text-[11px]" id="drawerTurnFilterContainer">
-            <button id="btnDrawerFilterScoped" onclick="setDrawerTurnsFilter(true)" class="px-2.5 py-0.5 rounded font-bold bg-blue-600 text-white shadow-sm transition-all">
-              仅看当日新增
+          <!-- 逐轮记录过滤器切换按钮与正倒序排序控制 -->
+          <div class="flex items-center gap-2">
+            <!-- 排序方向切换按钮 (默认：最新在最上) -->
+            <button id="btnToggleTurnOrder" onclick="toggleDrawerTurnOrder()" class="flex items-center gap-1 px-2.5 py-1 rounded-lg border theme-border bg-slate-100/90 dark:bg-slate-800/90 hover:bg-slate-200 dark:hover:bg-slate-700 text-[11px] font-bold text-slate-700 dark:text-slate-300 transition-all shadow-xs" title="点击切换对话排序方向 (最新在最上 / 最早在最上)">
+              <svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+              <span id="turnOrderText">最新在最上</span>
             </button>
-            <button id="btnDrawerFilterAll" onclick="setDrawerTurnsFilter(false)" class="px-2.5 py-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white transition-all">
-              查看全量历史
-            </button>
+
+            <!-- 仅看当日 / 查看全量 过滤器 -->
+            <div class="flex items-center gap-1 p-0.5 rounded-lg bg-slate-200/50 dark:bg-slate-800 text-[11px]" id="drawerTurnFilterContainer">
+              <button id="btnDrawerFilterScoped" onclick="setDrawerTurnsFilter(true)" class="px-2.5 py-0.5 rounded font-bold bg-blue-600 text-white shadow-sm transition-all">
+                仅看当日新增
+              </button>
+              <button id="btnDrawerFilterAll" onclick="setDrawerTurnsFilter(false)" class="px-2.5 py-0.5 rounded text-slate-500 hover:text-slate-900 dark:hover:text-white transition-all">
+                查看全量历史
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1306,6 +1317,7 @@ def generate_html(summary, conversations):
     let drawerShowOnlyScoped = true; // 抽屉内是否仅看当前时间段新增轮次
 
     let chartInstances = {};
+    let lockedTrendDate = null; // 当前在近 7 日趋势图上被固定的日期 Tooltip (锁定状态，支持鼠标自由乱动，绝不跳页)
 
     function formatNumber(n) { return (n || 0).toLocaleString(); }
     function formatShort(n) {
@@ -1833,7 +1845,8 @@ def generate_html(summary, conversations):
               backgroundColor: 'rgba(59, 130, 246, 0.15)',
               tension: 0.35,
               fill: true,
-              pointRadius: 3
+              pointRadius: 4,
+              pointHoverRadius: 6
             },
             {
               label: '缓存读取 Token',
@@ -1842,7 +1855,8 @@ def generate_html(summary, conversations):
               backgroundColor: 'rgba(251, 191, 36, 0.05)',
               tension: 0.35,
               fill: true,
-              pointRadius: 3
+              pointRadius: 4,
+              pointHoverRadius: 6
             }
           ]
         },
@@ -1857,12 +1871,37 @@ def generate_html(summary, conversations):
             if (elements && elements.length > 0) {
               const index = elements[0].index;
               const targetDate = s.trend.labels[index];
-              if (targetDate) filterBySpecificDate(targetDate);
+              if (targetDate) toggleDateLock(targetDate, index);
+            } else {
+              // 点击了图表无数据空白区域，若当前锁定则解除锁定
+              if (lockedTrendDate) unlockTrendTooltip(true);
+            }
+          },
+          onHover: (e, elements, chart) => {
+            // 当处于锁定状态时，锁定两数据集的数据点持续高亮，鼠标乱动不改变高亮
+            if (lockedTrendDate) {
+              const idx = s.trend.labels.indexOf(lockedTrendDate);
+              if (idx >= 0) {
+                chart.setActiveElements([
+                  { datasetIndex: 0, index: idx },
+                  { datasetIndex: 1, index: idx }
+                ]);
+              }
+            }
+          },
+          onResize: (chart, size) => {
+            if (lockedTrendDate) {
+              const idx = s?.trend?.labels?.indexOf(lockedTrendDate);
+              if (idx !== undefined && idx >= 0) {
+                setTimeout(() => repositionPinnedTooltip(idx), 50);
+              }
             }
           },
           plugins: {
             legend: { display: false },
             tooltip: {
+              // 关键设计：当用户锁定了卡片，禁用原生跟随鼠标乱动的 Tooltip，保持界面极致纯净！
+              enabled: () => !lockedTrendDate,
               callbacks: {
                 title: items => `📅 日期: ${items[0].label}`,
                 label: ctx => `  ${ctx.dataset.label}: ${formatShort(ctx.raw)} (${formatNumber(ctx.raw)} tokens)`,
@@ -1871,7 +1910,7 @@ def generate_html(summary, conversations):
                   const cache = items.find(i => i.dataset.label === '缓存读取 Token')?.raw || 0;
                   const tot = billed + cache;
                   const rate = tot > 0 ? ((cache / tot) * 100).toFixed(1) : 0;
-                  return `\n  ───────────────\n  ✨ 当日总量: ${formatShort(tot)}\n  ⚡ 缓存命中率: ${rate}% (点击图表直达筛选)`;
+                  return `\n  ───────────────\n  ✨ 当日总量: ${formatShort(tot)}\n  ⚡ 缓存命中率: ${rate}% (点击可锁定此提示框)`;
                 }
               }
             }
@@ -1895,9 +1934,10 @@ def generate_html(summary, conversations):
           const cache = s.trend.cache[idx] || 0;
           const shortDate = dayStr.slice(5);
           const pill = document.createElement('div');
-          pill.className = 'p-2 rounded-xl theme-subtle border hover:border-cyan-500/50 hover:bg-cyan-500/5 transition-all cursor-pointer group select-none';
-          pill.onclick = () => filterBySpecificDate(dayStr);
-          pill.title = `点击精准筛选 ${dayStr} 会话明细\n净计费: ${formatNumber(billed)}\n缓存读取: ${formatNumber(cache)}`;
+          pill.setAttribute('data-date', dayStr);
+          pill.className = 'daily-preview-pill p-2 rounded-xl theme-subtle border hover:border-cyan-500/50 hover:bg-cyan-500/5 transition-all cursor-pointer group select-none';
+          pill.onclick = () => toggleDateLock(dayStr, idx);
+          pill.title = `点击锁定/筛选 ${dayStr} 会话明细\n净计费: ${formatNumber(billed)}\n缓存读取: ${formatNumber(cache)}`;
           pill.innerHTML = `
             <div class="text-[11px] font-mono font-semibold text-slate-500 dark:text-slate-400 group-hover:text-cyan-500 transition-colors">${shortDate}</div>
             <div class="text-xs font-extrabold text-blue-600 dark:text-cyan-400 font-mono mt-0.5">${formatShort(billed)}</div>
@@ -1905,6 +1945,19 @@ def generate_html(summary, conversations):
           `;
           pillsContainer.appendChild(pill);
         });
+      }
+
+      // 若已有锁定日期，在重新渲染图表后恢复锁定框
+      if (lockedTrendDate) {
+        const idx = s.trend.labels.indexOf(lockedTrendDate);
+        if (idx >= 0) {
+          setTimeout(() => {
+            renderAndPositionPinnedTooltip(lockedTrendDate, idx);
+            updateDailyPillsHighlight(lockedTrendDate);
+          }, 60);
+        } else {
+          unlockTrendTooltip(false);
+        }
       }
 
       const ctxRatio = document.getElementById('ratioChart').getContext('2d');
@@ -1934,7 +1987,207 @@ def generate_html(summary, conversations):
       });
     }
 
-    function filterBySpecificDate(dateStr) {
+    // ==========================================
+    // 图表提示框“一键锁定/防跳页”核心控制器 (Lockable Pinned Tooltip)
+    // 彻底解决用户指出的：“点击日期不要跳转到下面，锁定框后鼠标可以乱动”
+    // ==========================================
+
+    function lockTrendTooltip(targetDate, targetIndex) {
+      const s = window.DASHBOARD_DATA;
+      if (!s || !s.trend || !s.trend.labels) return;
+
+      let idx = targetIndex;
+      if (idx === undefined || idx === null || idx < 0) {
+        idx = s.trend.labels.indexOf(targetDate);
+      }
+      if (idx < 0) return;
+
+      lockedTrendDate = targetDate;
+
+      // 1. 同步执行底层数据筛选与徽章更新（静默生效，绝不调用 scrollIntoView 跳页）
+      filterBySpecificDate(targetDate, false);
+
+      // 2. 渲染并定位锁定的 Tooltip 浮层卡片
+      renderAndPositionPinnedTooltip(targetDate, idx);
+
+      // 3. 高亮图表数据点
+      if (chartInstances.trend) {
+        try {
+          chartInstances.trend.setActiveElements([
+            { datasetIndex: 0, index: idx },
+            { datasetIndex: 1, index: idx }
+          ]);
+          chartInstances.trend.update();
+        } catch (e) {}
+      }
+
+      // 4. 更新下方速览胶囊高亮发光状态
+      updateDailyPillsHighlight(targetDate);
+
+      showToast(`已锁定 ${targetDate} 数据卡片 (鼠标可乱动)`);
+    }
+
+    function unlockTrendTooltip(needClearFilter = true) {
+      if (!lockedTrendDate) return;
+      lockedTrendDate = null;
+
+      // 1. 隐藏锁定浮层
+      const tooltipElem = document.getElementById('trendChartPinnedTooltip');
+      if (tooltipElem) tooltipElem.classList.add('hidden');
+
+      // 2. 清除图表点高亮
+      if (chartInstances.trend) {
+        try {
+          chartInstances.trend.setActiveElements([]);
+          chartInstances.trend.update();
+        } catch (e) {}
+      }
+
+      // 3. 清除下方胶囊高亮
+      updateDailyPillsHighlight(null);
+
+      // 4. 恢复全部数据筛选
+      if (needClearFilter && currentSpecificDate) {
+        clearSpecificDate(false);
+      }
+    }
+
+    function toggleDateLock(targetDate, targetIndex) {
+      if (lockedTrendDate === targetDate) {
+        unlockTrendTooltip(true);
+      } else {
+        lockTrendTooltip(targetDate, targetIndex);
+      }
+    }
+
+    function updateDailyPillsHighlight(activeDate) {
+      const pillsContainer = document.getElementById('dailyTrendPills');
+      if (!pillsContainer) return;
+      const pills = pillsContainer.querySelectorAll('.daily-preview-pill');
+      pills.forEach(pill => {
+        const d = pill.getAttribute('data-date');
+        if (activeDate && d === activeDate) {
+          pill.classList.add('border-cyan-500', 'ring-2', 'ring-cyan-500/40', 'bg-cyan-500/10');
+        } else {
+          pill.classList.remove('border-cyan-500', 'ring-2', 'ring-cyan-500/40', 'bg-cyan-500/10');
+        }
+      });
+    }
+
+    function renderAndPositionPinnedTooltip(targetDate, idx) {
+      const s = window.DASHBOARD_DATA;
+      const container = document.getElementById('trendChartContainer');
+      const tooltipElem = document.getElementById('trendChartPinnedTooltip');
+      if (!s || !container || !tooltipElem || !chartInstances.trend) return;
+
+      const billed = s.trend.billed[idx] || 0;
+      const cache = s.trend.cache[idx] || 0;
+      const tot = billed + cache;
+      const rate = tot > 0 ? ((cache / tot) * 100).toFixed(1) : 0;
+
+      // 精致的深色高对比度玻璃拟态卡片，1:1 还原并超越原生 Tooltip 质感
+      tooltipElem.innerHTML = `
+        <div class="bg-slate-900/95 dark:bg-slate-950/95 text-white backdrop-blur-md px-3.5 py-2.5 rounded-xl border border-slate-700/80 shadow-2xl text-[12px] min-w-[260px] max-w-[320px] leading-relaxed">
+          <div class="flex items-center justify-between pb-1.5 border-b border-slate-700/60 mb-2">
+            <div class="flex items-center gap-1.5 font-bold text-slate-100 font-mono">
+              <span>📅</span>
+              <span>日期: ${targetDate}</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                🔒 已锁定
+              </span>
+              <button onclick="unlockTrendTooltip()" class="text-slate-400 hover:text-white hover:bg-slate-800 p-0.5 rounded transition-colors text-xs font-bold leading-none cursor-pointer" title="点击解锁 / 关闭">✕</button>
+            </div>
+          </div>
+          <div class="space-y-1 font-mono text-[11px]">
+            <div class="flex items-center justify-between gap-3">
+              <span class="text-slate-300 flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 rounded-sm bg-blue-500 inline-block"></span>
+                净计费 Token:
+              </span>
+              <span class="font-bold text-blue-400">${formatShort(billed)} <span class="text-[10px] text-slate-400 font-normal">(${formatNumber(billed)})</span></span>
+            </div>
+            <div class="flex items-center justify-between gap-3">
+              <span class="text-slate-300 flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 rounded-sm bg-amber-400 inline-block"></span>
+                缓存读取 Token:
+              </span>
+              <span class="font-bold text-amber-300">${formatShort(cache)} <span class="text-[10px] text-slate-400 font-normal">(${formatNumber(cache)})</span></span>
+            </div>
+          </div>
+          <div class="my-2 border-t border-slate-700/60"></div>
+          <div class="space-y-1 text-[11px]">
+            <div class="flex items-center justify-between text-slate-300">
+              <span class="flex items-center gap-1">✨ 当日总量:</span>
+              <span class="font-bold font-mono text-white">${formatShort(tot)}</span>
+            </div>
+            <div class="flex items-center justify-between text-slate-300">
+              <span class="flex items-center gap-1">⚡ 缓存命中率:</span>
+              <span class="font-bold font-mono text-emerald-400">${rate}%</span>
+            </div>
+          </div>
+          <div class="mt-2 pt-1.5 border-t border-slate-800/80 text-[10px] text-slate-400 flex items-center justify-between select-none">
+            <span class="text-slate-400">💡 提示框已锁定，鼠标可乱动</span>
+            <span class="text-cyan-400/90 hover:text-cyan-300 cursor-pointer font-medium" onclick="unlockTrendTooltip()">点击解锁 ✕</span>
+          </div>
+        </div>
+      `;
+
+      // 阻止浮层内部点击冒泡（允许选中文本复制，不误触 canvas 解锁）
+      tooltipElem.onclick = (e) => e.stopPropagation();
+
+      // 显示浮层
+      tooltipElem.classList.remove('hidden');
+
+      // 计算像素定位
+      repositionPinnedTooltip(idx);
+    }
+
+    function repositionPinnedTooltip(idx) {
+      const container = document.getElementById('trendChartContainer');
+      const tooltipElem = document.getElementById('trendChartPinnedTooltip');
+      if (!container || !tooltipElem || !chartInstances.trend) return;
+
+      const meta0 = chartInstances.trend.getDatasetMeta(0);
+      const meta1 = chartInstances.trend.getDatasetMeta(1);
+      if (!meta0 || !meta0.data || !meta0.data[idx]) return;
+
+      const p0 = meta0.data[idx];
+      const p1 = meta1 && meta1.data ? meta1.data[idx] : null;
+
+      const anchorX = p0.x;
+      const anchorY = p1 ? Math.min(p0.y, p1.y) : p0.y;
+
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+
+      let transformX = '-50%';
+      let left = anchorX;
+
+      if (anchorX < 140) {
+        transformX = '0%';
+        left = Math.max(8, anchorX - 16);
+      } else if (anchorX > containerWidth - 140) {
+        transformX = '-100%';
+        left = Math.min(containerWidth - 8, anchorX + 16);
+      }
+
+      let transformY = '-100%';
+      let top = anchorY - 12;
+
+      // 如果数据点靠近容器顶部，上方空间不足（容器高 240px，卡片高约 165px），则放置在下方
+      if (anchorY < 165) {
+        transformY = '0%';
+        top = anchorY + 14;
+      }
+
+      tooltipElem.style.left = `${left}px`;
+      tooltipElem.style.top = `${top}px`;
+      tooltipElem.style.transform = `translate(${transformX}, ${transformY})`;
+    }
+
+    function filterBySpecificDate(dateStr, showToastMsg = true) {
       currentSpecificDate = dateStr;
       currentTimeCategory = 'all';
 
@@ -1956,14 +2209,18 @@ def generate_html(summary, conversations):
       applyFilterAndSort();
       renderProjectsView();
 
-      showToast(`已为您精准锁定 ${dateStr} 的记录`);
-      const targetElem = (currentView === 'session') ? document.getElementById('sessionViewContainer') : document.getElementById('projectViewContainer');
-      if (targetElem) targetElem.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (showToastMsg) {
+        showToast(`已为您精准锁定 ${dateStr} 的记录`);
+      }
+      // 【关键修复】：彻底移除 scrollIntoView，绝不跳页，确保用户视角稳稳停留在图表区域！
     }
 
-    function clearSpecificDate() {
+    function clearSpecificDate(unlockChart = true) {
       currentSpecificDate = null;
       setTimeFilter('all');
+      if (unlockChart && lockedTrendDate) {
+        unlockTrendTooltip(false);
+      }
       showToast('已恢复查看全部时间记录');
     }
 
@@ -2680,6 +2937,7 @@ def generate_html(summary, conversations):
 
       // 初始化逐轮对话过滤控制器与对话列表
       drawerShowOnlyScoped = Boolean(currentSpecificDate || currentTimeCategory === 'today');
+      updateTurnOrderButtonUI();
       renderDrawerTurns();
 
       // Footer 时间
@@ -2706,6 +2964,27 @@ def generate_html(summary, conversations):
       setTimeout(() => {
         drawer.classList.remove('translate-x-full');
       }, 10);
+    }
+
+    let drawerTurnOrder = 'desc'; // 默认：最新的一轮对话放在最上面 (倒序置顶)
+
+    function toggleDrawerTurnOrder() {
+      drawerTurnOrder = (drawerTurnOrder === 'desc') ? 'asc' : 'desc';
+      updateTurnOrderButtonUI();
+      renderDrawerTurns();
+    }
+
+    function updateTurnOrderButtonUI() {
+      const text = document.getElementById('turnOrderText');
+      const btn = document.getElementById('btnToggleTurnOrder');
+      if (!text) return;
+      if (drawerTurnOrder === 'desc') {
+        text.innerText = '最新在最上';
+        if (btn) btn.title = '当前：最新对话在最上面（倒序）。点击切换为最早对话在前（正序）';
+      } else {
+        text.innerText = '最早在最上';
+        if (btn) btn.title = '当前：最早对话在最上面（正序）。点击切换为最新对话在前（倒序）';
+      }
     }
 
     function setDrawerTurnsFilter(onlyScoped) {
@@ -2739,26 +3018,39 @@ def generate_html(summary, conversations):
         drawerShowOnlyScoped = false;
       }
 
-      let displayedTurns = allTurns;
+      let displayedTurns = [...allTurns];
       if (drawerShowOnlyScoped && targetDay) {
-        displayedTurns = allTurns.filter(t => t.day === targetDay);
+        displayedTurns = displayedTurns.filter(t => t.day === targetDay);
         badge.innerText = `当日新增 ${displayedTurns.length} 轮 (共 ${allTurns.length} 轮)`;
       } else {
         badge.innerText = `全量历史共 ${allTurns.length} 轮`;
+      }
+
+      // 根据排序方向决定最新或最早在前（默认 desc：最新的一轮对话排在最上面）
+      if (drawerTurnOrder === 'desc') {
+        displayedTurns.sort((a, b) => b.turn - a.turn);
+      } else {
+        displayedTurns.sort((a, b) => a.turn - b.turn);
       }
 
       turnsListContainer.innerHTML = '';
       if (displayedTurns.length === 0) {
         turnsListContainer.innerHTML = `<div class="text-xs text-slate-400 py-12 text-center">当前时间范围内暂无新增对话提问</div>`;
       } else {
-        displayedTurns.forEach(t => {
+        displayedTurns.forEach((t, idx) => {
+          const isLatest = (drawerTurnOrder === 'desc' && idx === 0) || (drawerTurnOrder === 'asc' && idx === displayedTurns.length - 1);
           const div = document.createElement('div');
-          div.className = 'w-full p-3.5 md:p-4 rounded-xl bg-slate-100/90 dark:bg-slate-800/80 border theme-border hover:border-cyan-500/40 transition-colors shadow-sm';
+          div.className = `w-full p-3.5 md:p-4 rounded-xl border theme-border transition-all shadow-sm ${
+            isLatest 
+              ? 'bg-blue-50/70 dark:bg-slate-800/95 border-blue-200 dark:border-blue-700/60 ring-1 ring-blue-500/20' 
+              : 'bg-slate-100/90 dark:bg-slate-800/80 hover:border-cyan-500/40'
+          }`;
           div.innerHTML = `
             <div class="flex items-center justify-between text-[11px] md:text-xs text-slate-500 dark:text-slate-400 font-mono mb-2 pb-1.5 border-b theme-border">
               <span class="font-extrabold text-blue-600 dark:text-cyan-400 flex items-center gap-1.5">
-                <span class="w-2 h-2 rounded-full bg-cyan-400 shadow-sm shadow-cyan-400/50"></span>
+                <span class="w-2 h-2 rounded-full ${isLatest ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50' : 'bg-cyan-400 shadow-sm shadow-cyan-400/50'}"></span>
                 第 ${t.turn} 轮对话
+                ${isLatest ? '<span class="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-bold border border-emerald-500/20 ml-1">最新</span>' : ''}
               </span>
               <span class="text-slate-400 font-mono">🕒 ${t.time || t.day || ''}</span>
             </div>
@@ -2818,6 +3110,16 @@ def generate_html(summary, conversations):
     });
 
     document.getElementById('projectSearchInput').addEventListener('input', renderProjectsView);
+
+    window.addEventListener('resize', () => {
+      if (lockedTrendDate && typeof repositionPinnedTooltip === 'function') {
+        const s = window.DASHBOARD_DATA;
+        const idx = s?.trend?.labels?.indexOf(lockedTrendDate);
+        if (idx !== undefined && idx >= 0) {
+          repositionPinnedTooltip(idx);
+        }
+      }
+    });
 
     window.addEventListener('DOMContentLoaded', () => {
       initTheme();
